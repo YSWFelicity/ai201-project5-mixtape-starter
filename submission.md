@@ -73,3 +73,39 @@ Most model classes provide `to_dict()` methods. Services and routes rely on thes
 Errors are usually communicated from services to routes with `ValueError`. Routes catch those exceptions and convert them into JSON error responses with either `400` or `404` status codes depending on the endpoint.
 
 The tests focus on service functions rather than HTTP endpoints. That matches the app's structure because the services contain the important behavior and the known bugs.
+
+## Bug Fixes
+
+### Issue #1: My listening streak keeps resetting
+
+**Affected service:** `services/streak_service.py`
+
+**How I reproduced it:** I ran the existing streak tests with `.venv/bin/python -m pytest tests/test_streaks.py`. The failure was `test_streak_increments_on_sunday`: a user listened on Saturday, June 15, 2024 at 12:00 UTC and then Sunday, June 16, 2024 at 12:00 UTC. The streak stayed at `1` instead of incrementing to `2`.
+
+**Root cause:** `update_listening_streak()` only incremented a one-day streak when `today.weekday() != 6`. In Python, Sunday is weekday `6`, so any Saturday-to-Sunday consecutive listen was forced into the reset branch.
+
+**Fix:** Removed the Sunday exclusion. Any `days_since_last == 1` now increments the streak.
+
+### Issue #4: Rating a friend's song does not create a notification
+
+**Affected service:** `services/notification_service.py`
+
+**How I reproduced it:** I created an in-memory test app with two users: `sharer` and `rater`. `sharer` shared a song titled `Rate Me`; then I called `rate_song(rater.id, song.id, 5)`. Before the call, `sharer` had `0` notifications. After the call, `sharer` still had `0` notifications, even though playlist additions already notified the original sharer.
+
+**Root cause:** `rate_song()` created or updated the `Rating` record but returned immediately after committing. It never called `create_notification()` for the original song sharer.
+
+**Fix:** After saving the rating, `rate_song()` now creates a `song_rated` notification for the original sharer when the rater is someone else. I also added regression tests for rating someone else's song and rating your own song.
+
+### Issue #5: The last song in a playlist never shows up
+
+**Affected service:** `services/playlist_service.py`
+
+**How I reproduced it:** I ran the existing playlist tests with `.venv/bin/python -m pytest tests/test_playlists.py`. The fixture creates a playlist with five songs at positions 1 through 5. `get_playlist_songs()` returned only four songs: `Track 1` through `Track 4`, omitting `Track 5`.
+
+**Root cause:** `get_playlist_songs()` queried the correct ordered song list, but returned `[song.to_dict() for song in songs[:-1]]`. The `[:-1]` slice dropped the final song every time.
+
+**Fix:** Returned all queried songs with `[song.to_dict() for song in songs]`.
+
+## Verification
+
+After the fixes, I ran `.venv/bin/python -m pytest tests/`. All 15 tests passed.
