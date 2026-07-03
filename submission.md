@@ -1,5 +1,17 @@
 # Mixtape Submission
 
+## AI Usage
+
+I used AI as a debugging partner and writing assistant, but I treated its suggestions as hypotheses that had to be checked against the code and tests. The main workflow was: I read the route and service files first, reproduced the behavior with pytest or controlled in-memory data, then used AI help to explain suspicious code paths and sharpen the root cause wording.
+
+For Issue #1, after tracing the listen route into `services/streak_service.py`, I used AI to sanity-check the date edge case and the meaning of Python's `datetime.weekday()`. The useful part was confirming that Sunday is represented as `6`, which made the condition `today.weekday() != 6` clearly suspicious. I still verified the diagnosis myself by running the Saturday-to-Sunday streak test before changing the code.
+
+For Issue #4, I used AI to compare two similar code paths: `add_to_playlist()` and `rate_song()` in `services/notification_service.py`. That helped me describe the structural difference: playlist adds called `create_notification()` for `song.shared_by`, while ratings saved the `Rating` and returned without creating a notification. I verified this myself by creating two users and one song in an in-memory database, calling `rate_song()`, and checking that the sharer's notification count stayed at `0` before the fix.
+
+For Issue #5, I used AI mostly to phrase the root cause clearly after I had already found the exact return expression. The important evidence came from reading `get_playlist_songs()` and seeing that the database query ordered the songs correctly, but the final Python slice `songs[:-1]` discarded the last item. I verified this with the playlist test fixture that created five positioned songs and got back only four.
+
+One place where AI could have led me in the wrong direction was Issue #3, the search duplicate report. The starter test comments suggested a multi-tag song might duplicate, but when I ran the search tests they all passed, likely because SQLAlchemy returned unique `Song` entities for that query shape. Since I could not reproduce that reported behavior, I did not fix Issue #3 and instead chose Issue #4, which I could reproduce with controlled data. That was a useful reminder that AI explanations and code comments are not enough; the bug had to reproduce before I treated it as real.
+
 ## Codebase Map
 
 ### Main files and directories
@@ -111,10 +123,6 @@ The tests focus on service functions rather than HTTP endpoints. That matches th
 **Root cause:** `get_playlist_songs()` queried the correct ordered song list from the database, but returned `[song.to_dict() for song in songs[:-1]]`. In Python, `songs[:-1]` means "all elements except the last one," so the service intentionally discarded the final song after retrieving it correctly.
 
 **Your fix and side-effect check:** I returned all queried songs with `[song.to_dict() for song in songs]`. I checked the related playlist boundaries with `tests/test_playlists.py`: empty playlists still return `[]`, playlists return all songs, and the ordering by `playlist_entries.position` is preserved.
-
-## AI Usage
-
-I used AI as a code-reading and documentation assistant after locating the relevant files myself. I first traced from routes to services, read the suspicious functions, and reproduced the failures with pytest or controlled in-memory data. Then I used AI help to sanity-check edge cases, compare the rating and playlist notification paths structurally, and phrase the root cause entries clearly. I did not rely on AI to pick bugs before reading the code; I verified each diagnosis by running the code with specific inputs before applying the smallest fix.
 
 ## Verification
 
