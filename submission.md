@@ -80,11 +80,11 @@ The tests focus on service functions rather than HTTP endpoints. That matches th
 
 **Issue number and title:** Issue #1, "My listening streak keeps resetting"
 
-**How I reproduced it:** I ran the existing streak tests with `.venv/bin/python -m pytest tests/test_streaks.py`. The failure was `test_streak_increments_on_sunday`: a user listened on Saturday, June 15, 2024 at 12:00 UTC and then Sunday, June 16, 2024 at 12:00 UTC. The streak stayed at `1` instead of incrementing to `2`.
+**How I reproduced it:** I ran the existing streak tests with `.venv/bin/python -m pytest tests/test_streaks.py`. The failure was `test_streak_increments_on_sunday`: a user listened on Saturday, June 15, 2024 at 12:00 UTC and then Sunday, June 16, 2024 at 12:00 UTC. Because those are consecutive calendar days, the listening streak should have increased from `1` to `2`, but it stayed at `1`.
 
 **How I found the root cause:** I started at the user-facing action, `POST /songs/<song_id>/listen` in `routes/songs.py`, and followed it to `record_listening_event()` in `services/streak_service.py`. That function creates a `ListeningEvent` and then calls `update_listening_streak(user, now)`, so I read that helper next. The moment that made the cause specific was the branch `elif days_since_last == 1 and today.weekday() != 6`: the failing test date was Sunday, and Python's `datetime.weekday()` returns `6` for Sunday, so that exact comparison excluded the only consecutive-day case being tested.
 
-**Root cause:** `update_listening_streak()` only incremented a one-day streak when `today.weekday() != 6`. In Python, Sunday is weekday `6`, so any Saturday-to-Sunday consecutive listen was forced into the reset branch.
+**Root cause:** `update_listening_streak()` calculated `days_since_last` correctly, but it only incremented a one-day streak when `today.weekday() != 6`. In Python, `datetime.weekday()` returns `6` for Sunday. That meant Saturday-to-Sunday listening had `days_since_last == 1` but failed the extra weekday check, so the code skipped the increment branch and fell into the reset branch.
 
 **Your fix and side-effect check:** I removed only the Sunday exclusion, so any `days_since_last == 1` now increments the streak. I checked related streak behavior with `tests/test_streaks.py`: first listen still starts at `1`, same-day listening still does not double count, Monday-to-Tuesday still increments, skipped days still reset, and Saturday-to-Sunday now increments.
 
@@ -92,11 +92,11 @@ The tests focus on service functions rather than HTTP endpoints. That matches th
 
 **Issue number and title:** Issue #4, "I got notified when a friend added my song to a playlist but not when they rated it"
 
-**How I reproduced it:** I created an in-memory test app with two users: `sharer` and `rater`. `sharer` shared a song titled `Rate Me`; then I called `rate_song(rater.id, song.id, 5)`. Before the call, `sharer` had `0` notifications. After the call, `sharer` still had `0` notifications, even though playlist additions already notified the original sharer.
+**How I reproduced it:** I created an in-memory test app with two users: `sharer` and `rater`. `sharer` shared a song titled `Rate Me`, which made `sharer.id` the song's `shared_by` owner. Then I called `rate_song(rater.id, song.id, 5)`. Before the call, `sharer` had `0` notifications. After the call, `sharer` still had `0` notifications, even though playlist additions already notified the original sharer.
 
 **How I found the root cause:** I started at `POST /songs/<song_id>/rate` in `routes/songs.py` and followed the route to `rate_song()` in `services/notification_service.py`. To compare the expected notification behavior, I read the nearby `add_to_playlist()` path in the same service and traced its call to `create_notification()`. The moment that made the cause specific was the structural difference between the two paths: `add_to_playlist()` explicitly checks `song.shared_by != added_by_user_id` and calls `create_notification()`, while `rate_song()` commits the `Rating` and returns without any equivalent notification call.
 
-**Root cause:** `rate_song()` created or updated the `Rating` record but returned immediately after committing. It never called `create_notification()` for the original song sharer.
+**Root cause:** `rate_song()` created or updated the `Rating` record but returned immediately after committing. The service already had a shared notification helper, `create_notification()`, and the playlist-add flow used it to notify `song.shared_by`, but the rating flow never called it. As a result, the rating was saved successfully while the original song sharer never received a `Notification` row.
 
 **Your fix and side-effect check:** After saving the rating, `rate_song()` now creates a `song_rated` notification for the original sharer when the rater is someone else. I added focused regression tests for rating someone else's song and rating your own song, so the new behavior does not create self-notifications. I also checked the existing playlist notification path stayed unchanged.
 
@@ -104,11 +104,11 @@ The tests focus on service functions rather than HTTP endpoints. That matches th
 
 **Issue number and title:** Issue #5, "The last song in a playlist never shows up"
 
-**How I reproduced it:** I ran the existing playlist tests with `.venv/bin/python -m pytest tests/test_playlists.py`. The fixture creates a playlist with five songs at positions 1 through 5. `get_playlist_songs()` returned only four songs: `Track 1` through `Track 4`, omitting `Track 5`.
+**How I reproduced it:** I ran the existing playlist tests with `.venv/bin/python -m pytest tests/test_playlists.py`. The fixture creates a playlist with five songs at positions 1 through 5 in the `playlist_entries` join table. `get_playlist_songs()` returned only four songs: `Track 1` through `Track 4`, omitting `Track 5`.
 
 **How I found the root cause:** I started at `GET /playlists/<playlist_id>/songs` in `routes/playlists.py` and followed it to `get_playlist_songs()` in `services/playlist_service.py`. I checked `models.py` to confirm playlist songs come through the `playlist_entries` association table with a `position` column. The query itself joined the right table, filtered by playlist ID, and ordered by position, so the moment that made the cause specific was the final return expression: it converted `songs[:-1]` instead of `songs`, dropping the last item after the database query had already returned the correct list.
 
-**Root cause:** `get_playlist_songs()` queried the correct ordered song list, but returned `[song.to_dict() for song in songs[:-1]]`. The `[:-1]` slice dropped the final song every time.
+**Root cause:** `get_playlist_songs()` queried the correct ordered song list from the database, but returned `[song.to_dict() for song in songs[:-1]]`. In Python, `songs[:-1]` means "all elements except the last one," so the service intentionally discarded the final song after retrieving it correctly.
 
 **Your fix and side-effect check:** I returned all queried songs with `[song.to_dict() for song in songs]`. I checked the related playlist boundaries with `tests/test_playlists.py`: empty playlists still return `[]`, playlists return all songs, and the ordering by `playlist_entries.position` is preserved.
 
