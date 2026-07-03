@@ -82,6 +82,8 @@ The tests focus on service functions rather than HTTP endpoints. That matches th
 
 **How I reproduced it:** I ran the existing streak tests with `.venv/bin/python -m pytest tests/test_streaks.py`. The failure was `test_streak_increments_on_sunday`: a user listened on Saturday, June 15, 2024 at 12:00 UTC and then Sunday, June 16, 2024 at 12:00 UTC. The streak stayed at `1` instead of incrementing to `2`.
 
+**Navigation strategy:** I started at the user-facing action, `POST /songs/<song_id>/listen` in `routes/songs.py`, and followed it to `record_listening_event()` in `services/streak_service.py`. That function creates a `ListeningEvent` and then calls `update_listening_streak(user, now)`, so I read that helper next. The branch that compared `days_since_last` and `today.weekday()` was the only code deciding whether a consecutive day increments or resets.
+
 **Root cause:** `update_listening_streak()` only incremented a one-day streak when `today.weekday() != 6`. In Python, Sunday is weekday `6`, so any Saturday-to-Sunday consecutive listen was forced into the reset branch.
 
 **Fix:** Removed the Sunday exclusion. Any `days_since_last == 1` now increments the streak.
@@ -91,6 +93,8 @@ The tests focus on service functions rather than HTTP endpoints. That matches th
 **Affected service:** `services/notification_service.py`
 
 **How I reproduced it:** I created an in-memory test app with two users: `sharer` and `rater`. `sharer` shared a song titled `Rate Me`; then I called `rate_song(rater.id, song.id, 5)`. Before the call, `sharer` had `0` notifications. After the call, `sharer` still had `0` notifications, even though playlist additions already notified the original sharer.
+
+**Navigation strategy:** I started at `POST /songs/<song_id>/rate` in `routes/songs.py` and followed the route to `rate_song()` in `services/notification_service.py`. To compare the expected notification behavior, I read the nearby `add_to_playlist()` path in the same service and traced its call to `create_notification()`. The structural difference was that playlist adds notified the original sharer after the write, while ratings only committed the `Rating` and returned.
 
 **Root cause:** `rate_song()` created or updated the `Rating` record but returned immediately after committing. It never called `create_notification()` for the original song sharer.
 
@@ -102,9 +106,15 @@ The tests focus on service functions rather than HTTP endpoints. That matches th
 
 **How I reproduced it:** I ran the existing playlist tests with `.venv/bin/python -m pytest tests/test_playlists.py`. The fixture creates a playlist with five songs at positions 1 through 5. `get_playlist_songs()` returned only four songs: `Track 1` through `Track 4`, omitting `Track 5`.
 
+**Navigation strategy:** I started at `GET /playlists/<playlist_id>/songs` in `routes/playlists.py` and followed it to `get_playlist_songs()` in `services/playlist_service.py`. I checked `models.py` to confirm playlist songs come through the `playlist_entries` association table with a `position` column. The query itself joined the right table, filtered by playlist ID, and ordered by position, so the suspicious part was the final return expression.
+
 **Root cause:** `get_playlist_songs()` queried the correct ordered song list, but returned `[song.to_dict() for song in songs[:-1]]`. The `[:-1]` slice dropped the final song every time.
 
 **Fix:** Returned all queried songs with `[song.to_dict() for song in songs]`.
+
+## AI Usage
+
+I used AI as a code-reading and documentation assistant after locating the relevant files myself. I first traced from routes to services, read the suspicious functions, and reproduced the failures with pytest or controlled in-memory data. Then I used AI help to sanity-check edge cases, compare the rating and playlist notification paths structurally, and phrase the root cause entries clearly. I did not rely on AI to pick bugs before reading the code; I verified each diagnosis by running the code with specific inputs before applying the smallest fix.
 
 ## Verification
 
